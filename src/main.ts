@@ -4,6 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { FootballToolsController } from "./interface/controllers/footballToolsController.js";
 import { BettingToolsController } from "./interface/controllers/bettingToolsController.js";
 import { LeagueScanController } from "./interface/controllers/leagueScanController.js";
+import { DailySlateController } from "./interface/controllers/dailySlateController.js";
+import { FootballDataService, OddsPapiService } from "./infrastructure/services/liveSources.js";
 import { FootballApiService } from "./infrastructure/services/footballApiService.js";
 import { FootballService } from "./application/services/footballService.js";
 
@@ -24,6 +26,7 @@ async function main() {
   new FootballToolsController(server, footballService);
   new BettingToolsController(server, api);
   new LeagueScanController(server, api);
+  new DailySlateController(server, new FootballDataService(), new OddsPapiService());
 
   // transport stdio
   const transport = new StdioServerTransport();
