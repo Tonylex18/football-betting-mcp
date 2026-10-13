@@ -62,6 +62,12 @@ export class FootballService {
 
   async getStandings(leagueId: number, season: number): Promise<StandingsDTO> {
     const data = await this.api.fetchStandings(leagueId, season);
+    if (!data.response || data.response.length === 0) {
+      throw new Error(
+        `No standings returned for league ${leagueId}, season ${season}. ` +
+          `The season may not have started, or your API plan may not cover it.`
+      );
+    }
     const list = data.response[0].league;
     const rows: StandingRow[] = list.standings[0].map((row: StandingRow) => ({
       rank: row.rank,
