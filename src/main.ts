@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { FootballToolsController } from "./interface/controllers/footballToolsController.js";
 import { BettingToolsController } from "./interface/controllers/bettingToolsController.js";
+import { LeagueScanController } from "./interface/controllers/leagueScanController.js";
 import { FootballApiService } from "./infrastructure/services/footballApiService.js";
 import { FootballService } from "./application/services/footballService.js";
 
@@ -22,6 +23,7 @@ async function main() {
   const footballService = new FootballService(api);
   new FootballToolsController(server, footballService);
   new BettingToolsController(server, api);
+  new LeagueScanController(server, api);
 
   // transport stdio
   const transport = new StdioServerTransport();

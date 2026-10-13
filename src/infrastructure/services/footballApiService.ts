@@ -1,7 +1,25 @@
 import fetch from "node-fetch";
 
 import * as dotenv from "dotenv";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as nodePath from "node:path";
+import { createHash } from "node:crypto";
 dotenv.config();
+
+// On-disk cache for data that can never change (finished seasons).
+const DISK_CACHE_DIR = nodePath.join(os.homedir(), ".mcp-football-cache");
+
+/** A season (start year) is finished if it is 2+ years old, or last year's and we're past June. */
+function isSeasonFinished(season: number): boolean {
+  const now = new Date();
+  const y = now.getFullYear();
+  if (season <= y - 2) return true;
+  if (season === y - 1 && now.getMonth() >= 6) return true;
+  return false;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const APISPORTS_KEY = process.env.APISPORTS_KEY;
 
@@ -36,26 +54,63 @@ export class FootballApiService {
       return hit.data as T;
     }
 
-    const res = await fetch(key, { headers: HEADERS });
-    if (!res.ok) {
-      throw new Error(`API-Football error ${res.status}: ${await res.text()}`);
+    // Permanent disk cache for finished-season queries (results never change).
+    const season = Number(params.season);
+    const diskCacheable = path === "/fixtures" && Number.isFinite(season) && isSeasonFinished(season);
+    const diskFile = nodePath.join(
+      DISK_CACHE_DIR,
+      createHash("sha1").update(key.replace(/^https?:\/\/[^/]+/, "")).digest("hex") + ".json"
+    );
+    if (diskCacheable) {
+      try {
+        const cached = JSON.parse(fs.readFileSync(diskFile, "utf8"));
+        this.cache.set(key, { at: Date.now(), data: cached });
+        return cached as T;
+      } catch {
+        /* not cached yet */
+      }
     }
 
-    const data: any = await res.json();
+    let data: any;
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(key, { headers: HEADERS });
+      if (!res.ok) {
+        if (res.status === 429 && attempt < 4) {
+          await sleep(7000);
+          continue;
+        }
+        throw new Error(`API-Football error ${res.status}: ${await res.text()}`);
+      }
+      data = await res.json();
 
-    // API-Football returns HTTP 200 with an "errors" field for plan limits,
-    // bad parameters, quota exhaustion, etc. Surface those clearly.
-    const errors = data?.errors;
-    const hasErrors = Array.isArray(errors)
-      ? errors.length > 0
-      : errors && typeof errors === "object" && Object.keys(errors).length > 0;
-    if (hasErrors) {
+      // API-Football returns HTTP 200 with an "errors" field for plan limits,
+      // bad parameters, quota exhaustion, etc. Surface those clearly.
+      const errors = data?.errors;
+      const hasErrors = Array.isArray(errors)
+        ? errors.length > 0
+        : errors && typeof errors === "object" && Object.keys(errors).length > 0;
+      if (!hasErrors) break;
+
+      // Per-minute rate limit on the free plan: wait and retry.
+      if (!Array.isArray(errors) && errors.rateLimit && attempt < 4) {
+        await sleep(7000);
+        continue;
+      }
       const msg = Array.isArray(errors)
         ? errors.join("; ")
         : Object.entries(errors)
             .map(([k, v]) => `${k}: ${v}`)
             .join("; ");
       throw new Error(`API-Football refused the request (${path}): ${msg}`);
+    }
+
+    if (diskCacheable && Array.isArray(data?.response) && data.response.length > 0) {
+      try {
+        fs.mkdirSync(DISK_CACHE_DIR, { recursive: true });
+        fs.writeFileSync(diskFile, JSON.stringify(data));
+      } catch {
+        /* cache is best-effort */
+      }
     }
 
     this.cache.set(key, { at: Date.now(), data });
