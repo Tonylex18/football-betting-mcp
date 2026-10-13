@@ -209,23 +209,24 @@ export class DailySlateController {
   private registerSlate(): void {
     this.server.tool(
       "get-daily-slate",
-      "Today's betting slate from CURRENT-season data: upcoming fixtures in the chosen leagues with live table form, " +
+      "Betting slate for today or any upcoming day(s) (startDate + days) from CURRENT-season data: upcoming fixtures in the chosen leagues with live table form, " +
         "rule-based win/goal probabilities, bookmaker odds (OddsPapi), edge per selection, and suggested 2-3 pick slips " +
         "around the target odds. Default leagues: PPL (Portugal), DED (Netherlands), BL1 (Germany), PL (England). " +
         "Also available: PD, SA, FL1, ELC. Uses ~1 football-data request per league plus 2-3 OddsPapi requests (cached). " +
         "Always check team news/injuries for the picked matches before betting.",
       {
-        days: z.number().min(1).max(3).optional().describe("How many days ahead including today (default 1)"),
+        days: z.number().min(1).max(7).optional().describe("How many days to cover from the start date (default 1, max 7)"),
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("First day to cover, YYYY-MM-DD (default today)"),
         competitions: z.array(z.string()).optional().describe("football-data.org codes, e.g. ['PPL','DED']"),
         bookmakers: z.string().optional().describe("OddsPapi bookmaker slugs, comma-separated, max 3. First one is used for edge. Default from ODDSPAPI_BOOKMAKERS"),
         minSlipOdds: z.number().optional().describe("Minimum combined slip odds (default 2.0)"),
         maxSlipOdds: z.number().optional().describe("Maximum combined slip odds (default 3.2)"),
         withOdds: z.boolean().optional().describe("Fetch bookmaker odds (default true). Set false to save OddsPapi quota."),
       },
-      async ({ days, competitions, bookmakers, minSlipOdds, maxSlipOdds, withOdds }) => {
+      async ({ days, startDate, competitions, bookmakers, minSlipOdds, maxSlipOdds, withOdds }) => {
         const nDays = days ?? 1;
         const codes = (competitions?.length ? competitions : DEFAULT_COMPS).map((c) => c.toUpperCase()).filter((c) => COMPS[c]);
-        const start = new Date();
+        const start = startDate ? new Date(`${startDate}T00:00:00`) : new Date();
         start.setHours(0, 0, 0, 0);
         const end = new Date(start.getTime() + nDays * 24 * 3600 * 1000);
         const now = Date.now();
