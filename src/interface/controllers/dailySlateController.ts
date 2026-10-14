@@ -218,7 +218,7 @@ export class DailySlateController {
         days: z.number().min(1).max(7).optional().describe("How many days to cover from the start date (default 1, max 7)"),
         startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("First day to cover, YYYY-MM-DD (default today)"),
         competitions: z.array(z.string()).optional().describe("football-data.org codes, e.g. ['PPL','DED']"),
-        bookmakers: z.string().optional().describe("OddsPapi bookmaker slugs, comma-separated, max 3. First one is used for edge. Default from ODDSPAPI_BOOKMAKERS"),
+        bookmakers: z.string().optional().describe("OddsPapi bookmaker slugs, comma-separated, max 3 (one request each). First one is used for edge. Default sportybet,pinnacle"),
         minSlipOdds: z.number().optional().describe("Minimum combined slip odds (default 2.0)"),
         maxSlipOdds: z.number().optional().describe("Maximum combined slip odds (default 3.2)"),
         withOdds: z.boolean().optional().describe("Fetch bookmaker odds (default true). Set false to save OddsPapi quota."),
@@ -326,9 +326,21 @@ export class DailySlateController {
               );
               const fxById = new Map<string, any>();
               for (const f of fixtures ?? []) if (ids.includes(f.tournamentId)) fxById.set(String(f.fixtureId), f);
-              const odds: any[] = await this.op.oddsByTournaments(ids, books.join(","));
+              // One request per bookmaker; merge bookmakerOdds per fixture.
               const oddsById = new Map<string, any>();
-              for (const o of odds ?? []) oddsById.set(String(o.fixtureId), o);
+              for (const book of books) {
+                try {
+                  const odds: any[] = await this.op.oddsByTournaments(ids, book);
+                  for (const o of odds ?? []) {
+                    const key = String(o.fixtureId);
+                    const prev = oddsById.get(key);
+                    if (prev) prev.bookmakerOdds = { ...prev.bookmakerOdds, ...(o.bookmakerOdds ?? {}) };
+                    else oddsById.set(key, { ...o, bookmakerOdds: { ...(o.bookmakerOdds ?? {}) } });
+                  }
+                } catch (e: any) {
+                  notes.push(`Odds for ${book} unavailable: ${e?.message ?? e}`);
+                }
+              }
 
               for (const entry of matchesOut) {
                 const tId = tmap[entry.competition];

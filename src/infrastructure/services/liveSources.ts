@@ -104,7 +104,7 @@ export class OddsPapiService {
   }
 
   get defaultBookmakers(): string {
-    return process.env.ODDSPAPI_BOOKMAKERS ?? "pinnacle";
+    return process.env.ODDSPAPI_BOOKMAKERS ?? "sportybet,pinnacle";
   }
 
   private async get(path: string, params: Record<string, string | number>, ttlMs: number): Promise<any> {
@@ -160,10 +160,11 @@ export class OddsPapiService {
     );
   }
 
-  oddsByTournaments(tournamentIds: number[], bookmakers: string) {
+  /** One bookmaker per request (free plan requires exactly one). */
+  oddsByTournaments(tournamentIds: number[], bookmaker: string) {
     return this.get(
       "/odds-by-tournaments",
-      { tournamentIds: tournamentIds.join(","), bookmakers, language: "en" },
+      { tournamentIds: tournamentIds.join(","), bookmaker, language: "en" },
       30 * MIN
     );
   }
