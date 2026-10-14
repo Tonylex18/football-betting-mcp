@@ -231,26 +231,26 @@ export class BasketballSlateController {
           const px = od ? extractBasketball(od.bookmakerOdds, meta, book) : null;
           if (!px) entry.oddsNote = best ? "No odds yet" : "No odds match found";
 
-          const add = (label: string, model: number, price?: number, fairMkt?: number) => {
+          const add = (label: string, model: number, price?: number, fairMkt?: number, key?: string, line?: number) => {
             const prob = fairMkt != null ? MODEL_WEIGHT * model + (1 - MODEL_WEIGHT) * fairMkt : model;
-            const sel: any = { label, modelProb: r3(model), marketProb: fairMkt != null ? r3(fairMkt) : null, prob: r3(prob), minOdds: Math.ceil((1.05 / prob) * 100) / 100 };
+            const sel: any = { key, line, label, modelProb: r3(model), marketProb: fairMkt != null ? r3(fairMkt) : null, prob: r3(prob), minOdds: Math.ceil((1.05 / prob) * 100) / 100 };
             if (price) {
               sel.price = price;
               sel.edge = r3(prob * price - 1);
               if (sel.edge > 0.25) sel.suspectPrice = true;
             }
             entry.selections.push(sel);
-            if (sel.edge > 0 && !sel.suspectPrice) picks.push({ game: `${V.full_name} @ ${H.full_name}`, tipoffUtc: entry.tipoffUtc, ...sel });
+            if (sel.edge > 0 && !sel.suspectPrice) picks.push({ game: `${V.full_name} @ ${H.full_name}`, home: H.full_name, away: V.full_name, tipoffUtc: entry.tipoffUtc, ...sel });
           };
 
           if (px?.ml?.home && px?.ml?.away) {
             const ih = 1 / px.ml.home, ia = 1 / px.ml.away;
             const fh = ih / (ih + ia);
-            add(`${H.full_name} to win`, pHome, px.ml.home, fh);
-            add(`${V.full_name} to win`, 1 - pHome, px.ml.away, 1 - fh);
+            add(`${H.full_name} to win`, pHome, px.ml.home, fh, "home");
+            add(`${V.full_name} to win`, 1 - pHome, px.ml.away, 1 - fh, "away");
           } else {
-            add(`${H.full_name} to win`, pHome);
-            add(`${V.full_name} to win`, 1 - pHome);
+            add(`${H.full_name} to win`, pHome, undefined, undefined, "home");
+            add(`${V.full_name} to win`, 1 - pHome, undefined, undefined, "away");
           }
           // Main line = the most balanced half-point line (whole numbers can push).
           const halfLines = (px?.totals ?? []).filter((t: any) => Math.abs(t.line % 1) === 0.5);
@@ -261,8 +261,8 @@ export class BasketballSlateController {
             const pOver = 1 - Phi((main.line - expTotal) / TOTAL_SD);
             const io = 1 / main.over, iu = 1 / main.under;
             const fo = io / (io + iu);
-            add(`Over ${main.line} points`, pOver, main.over, fo);
-            add(`Under ${main.line} points`, 1 - pOver, main.under, 1 - fo);
+            add(`Over ${main.line} points`, pOver, main.over, fo, "over", main.line);
+            add(`Under ${main.line} points`, 1 - pOver, main.under, 1 - fo, "under", main.line);
           }
           games.push(entry);
         }

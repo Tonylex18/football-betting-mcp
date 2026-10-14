@@ -404,7 +404,12 @@ export class DailySlateController {
               const oddsById = new Map<string, any>();
               for (const book of books) {
                 try {
-                  const odds: any[] = await this.op.oddsByTournaments(ids, book);
+                  // Only leagues with fixtures in the window, max 5 tournament IDs per request.
+                  const activeIds = ids.filter((id) => matchesOut.some((m) => tmap[m.competition] === id));
+                  const odds: any[] = [];
+                  for (let i = 0; i < activeIds.length; i += 5) {
+                    odds.push(...((await this.op.oddsByTournaments(activeIds.slice(i, i + 5), book)) ?? []));
+                  }
                   for (const o of odds ?? []) {
                     const key = String(o.fixtureId);
                     const prev = oddsById.get(key);
@@ -487,7 +492,7 @@ export class DailySlateController {
           for (const s of m.selections) {
             s.prob = r3(s.prob);
             s.minOdds = Math.ceil((1.05 / s.prob) * 100) / 100; // take only at or above this price
-            if (s.price && s.edge > 0 && !s.suspectPrice) pool.push({ mi, match: `${m.home} v ${m.away}`, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, modelProb: s.modelProb, marketProb: s.marketProb, price: s.price, priceFrom: s.priceFrom, minOdds: s.minOdds, edge: s.edge });
+            if (s.price && s.edge > 0 && !s.suspectPrice) pool.push({ mi, match: `${m.home} v ${m.away}`, competition: m.competition, home: m.home, away: m.away, key: s.key, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, modelProb: s.modelProb, marketProb: s.marketProb, price: s.price, priceFrom: s.priceFrom, minOdds: s.minOdds, edge: s.edge });
           }
         });
         pool.sort((a, b) => b.edge - a.edge);
