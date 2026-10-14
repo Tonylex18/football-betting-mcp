@@ -85,7 +85,7 @@ function fullGame(period: string) {
 function extractBasketball(bookmakerOdds: any, meta: Map<string, any>, slug: string) {
   const bo = bookmakerOdds?.[slug];
   if (!bo || bo.bookmakerIsActive === false) return null;
-  const out: any = { ml: {}, totals: [] as any[] };
+  const out: any = { ml: {}, totals: [] as any[], spreads: [] as any[] };
   for (const [mid, mk] of Object.entries<any>(bo.markets ?? {})) {
     const m = meta.get(String(mid));
     if (!m || !fullGame(m.period)) continue;
@@ -100,6 +100,11 @@ function extractBasketball(bookmakerOdds: any, meta: Map<string, any>, slug: str
         if (o.name === "1" || o.name === "home") out.ml.home = price;
         if (o.name === "2" || o.name === "away") out.ml.away = price;
       }
+    } else if (type === "spreads") {
+      // handicap applies to the home side: outcome "1" = home +handicap, "2" = away -handicap
+      const h = outs.find((o) => o.name === "1");
+      const a = outs.find((o) => o.name === "2");
+      if (h?.p?.price && a?.p?.price) out.spreads.push({ line: Number(m.handicap), home: Number(h.p.price), away: Number(a.p.price) });
     } else if (type === "totals") {
       const over = outs.find((o) => o.name.startsWith("over"));
       const under = outs.find((o) => o.name.startsWith("under"));
@@ -128,7 +133,7 @@ export class BasketballSlateController {
       "get-basketball-slate",
       "NBA picks for the next N hours (default 24h from now; NBA tips off roughly 00:00-05:00 Lagos time). " +
         "Rating model from this season's results (balldontlie) blended with last season early on, plus back-to-back " +
-        "fatigue, calibrated 30/70 against Pinnacle fair odds (OddsPapi). Returns moneyline and main-line total picks " +
+        "fatigue, calibrated 30/70 against Pinnacle fair odds (OddsPapi). Returns moneyline, main-line point spread (handicap) and main-line total picks " +
         "with our probability, Pinnacle price, edge and minimum SportyBet odds. First run downloads last season in chunks; " +
         "if it reports 'warming up', run it again.",
       {
@@ -263,6 +268,17 @@ export class BasketballSlateController {
             const fo = io / (io + iu);
             add(`Over ${main.line} points`, pOver, main.over, fo, "over", main.line);
             add(`Under ${main.line} points`, 1 - pOver, main.under, 1 - fo, "under", main.line);
+          }
+          const halfSpreads = (px?.spreads ?? []).filter((t: any) => Math.abs(t.line % 1) === 0.5);
+          const spr = halfSpreads.slice().sort((a: any, b: any) => Math.abs(a.home - a.away) - Math.abs(b.home - b.away))[0];
+          if (spr) {
+            // home covers if (home margin + line) > 0
+            const pHomeCover = Phi((margin + spr.line) / MARGIN_SD);
+            const ih = 1 / spr.home, ia = 1 / spr.away;
+            const fh = ih / (ih + ia);
+            const fmt = (x: number) => (x > 0 ? `+${x}` : `${x}`);
+            add(`${H.full_name} ${fmt(spr.line)}`, pHomeCover, spr.home, fh, "home_spread", spr.line);
+            add(`${V.full_name} ${fmt(-spr.line)}`, 1 - pHomeCover, spr.away, 1 - fh, "away_spread", spr.line);
           }
           games.push(entry);
         }

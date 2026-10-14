@@ -72,6 +72,8 @@ function settle(key: string, line: number | undefined, hg: number, ag: number): 
     case "away_or_draw": return ag >= hg ? "won" : "lost";
     case "btts_yes": return hg > 0 && ag > 0 ? "won" : "lost";
     case "btts_no": return hg > 0 && ag > 0 ? "lost" : "won";
+    case "home_spread": { const v = hg + (line ?? 0) - ag; return v === 0 ? "void" : v > 0 ? "won" : "lost"; }
+    case "away_spread": { const v = hg + (line ?? 0) - ag; return v === 0 ? "void" : v < 0 ? "won" : "lost"; }
     case "over": return ou("over", line ?? 0);
     case "under": return ou("under", line ?? 0);
   }
