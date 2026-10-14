@@ -181,6 +181,67 @@ export class DailySlateController {
     this.registerSlate();
     this.registerTable();
     this.registerBookmakers();
+    this.registerInspectOdds();
+  }
+
+  private registerInspectOdds(): void {
+    this.server.tool(
+      "inspect-odds-markets",
+      "Debug view of how OddsPapi labels markets for one fixture: every market's id, name, handicap, type, period and " +
+        "outcome names with prices, per bookmaker. Uses cached odds when available. Use it to verify market mapping.",
+      {
+        competition: z.string().describe("Competition code whose tournament to inspect, e.g. DED"),
+        bookmaker: z.string().describe("Bookmaker slug, e.g. pinnacle or sportybet"),
+        match: z.string().optional().describe("Part of a team name to pick the fixture (default: first fixture)"),
+        filter: z.string().optional().describe("Only markets whose name contains this text, e.g. 'over'"),
+      },
+      async ({ competition, bookmaker, match, filter }) => {
+        const code = competition.toUpperCase();
+        const tmap = await this.resolveTournaments([code]);
+        const tId = tmap[code];
+        if (!tId) throw new Error(`No OddsPapi tournament found for ${code}`);
+        const metaList: any[] = await this.op.markets();
+        const meta = new Map<string, any>();
+        for (const m of metaList ?? []) meta.set(String(m.marketId), m);
+        const odds: any[] = await this.op.oddsByTournaments([tId], bookmaker);
+        const sample = odds.find((o) => {
+          if (!match) return true;
+          const q = match.toLowerCase();
+          return JSON.stringify(o).toLowerCase().includes(q);
+        }) ?? odds[0];
+        if (!sample) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ tournamentId: tId, fixtures: 0, note: "No odds returned for this bookmaker" }) }] };
+        }
+        const books = Object.keys(sample.bookmakerOdds ?? {});
+        const rows: any[] = [];
+        for (const [slug, bo] of Object.entries<any>(sample.bookmakerOdds ?? {})) {
+          for (const [mid, mk] of Object.entries<any>(bo.markets ?? {})) {
+            const m = meta.get(String(mid));
+            const name = String(m?.marketName ?? "(unknown market id)");
+            if (filter && !name.toLowerCase().includes(filter.toLowerCase())) continue;
+            const outs: any[] = [];
+            for (const [oid, oc] of Object.entries<any>(mk.outcomes ?? {})) {
+              const metaOut = (m?.outcomes ?? []).find((x: any) => String(x.outcomeId) === String(oid));
+              outs.push({ outcomeId: oid, name: metaOut?.outcomeName ?? null, bookmakerOutcomeId: oc?.players?.["0"]?.bookmakerOutcomeId ?? null, price: oc?.players?.["0"]?.price ?? null });
+            }
+            rows.push({ slug, marketId: mid, name, handicap: m?.handicap, type: m?.marketType, period: m?.period, playerProp: m?.playerProp, classifiedAs: m ? classifyMarket({ name, handicap: Number(m.handicap ?? 0), type: String(m.marketType ?? ""), outcomes: {} }) : null, outcomes: outs });
+          }
+        }
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              tournamentId: tId,
+              fixturesWithOdds: odds.length,
+              fixtureId: sample.fixtureId,
+              participants: [sample.participant1Id, sample.participant2Id],
+              bookmakersInResponse: books,
+              markets: rows.slice(0, 80),
+            }),
+          }],
+        };
+      }
+    );
   }
 
   private async resolveTournaments(codes: string[]) {
@@ -368,6 +429,8 @@ export class DailySlateController {
                   s.priceFrom = p[primary] ? primary : Object.keys(p).find((k) => p[k] === s.price);
                   s.impliedProb = r3(1 / s.price);
                   s.edge = r3(s.prob * s.price - 1);
+                  // No real pre-match edge is this big: treat as a mis-mapped market.
+                  if (s.edge > 0.4) s.suspectPrice = true;
                 }
               }
             }
@@ -383,7 +446,7 @@ export class DailySlateController {
         matchesOut.forEach((m, mi) => {
           for (const s of m.selections) {
             s.prob = r3(s.prob);
-            if (s.price && s.edge > 0) pool.push({ mi, match: `${m.home} v ${m.away}`, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, price: s.price, edge: s.edge });
+            if (s.price && s.edge > 0 && !s.suspectPrice) pool.push({ mi, match: `${m.home} v ${m.away}`, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, price: s.price, edge: s.edge });
           }
         });
         pool.sort((a, b) => b.edge - a.edge);
