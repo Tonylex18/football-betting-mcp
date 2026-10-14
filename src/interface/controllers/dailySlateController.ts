@@ -197,15 +197,21 @@ export class DailySlateController {
       "Debug view of how OddsPapi labels markets for one fixture: every market's id, name, handicap, type, period and " +
         "outcome names with prices, per bookmaker. Uses cached odds when available. Use it to verify market mapping.",
       {
-        competition: z.string().describe("Competition code whose tournament to inspect, e.g. DED"),
+        competition: z.string().describe("Competition code whose tournament to inspect, e.g. DED, or NBA for basketball"),
         bookmaker: z.string().describe("Bookmaker slug, e.g. pinnacle or sportybet"),
         match: z.string().optional().describe("Part of a team name to pick the fixture (default: first fixture)"),
         filter: z.string().optional().describe("Only markets whose name contains this text, e.g. 'over'"),
       },
       async ({ competition, bookmaker, match, filter }) => {
         const code = competition.toUpperCase();
-        const tmap = await this.resolveTournaments([code]);
-        const tId = tmap[code];
+        let tId: number | undefined;
+        if (code === "NBA") {
+          const list: any[] = await this.op.tournaments(11);
+          tId = (list ?? []).find((t) => String(t.tournamentName ?? "").trim().toLowerCase() === "nba")?.tournamentId;
+        } else {
+          const tmap = await this.resolveTournaments([code]);
+          tId = tmap[code];
+        }
         if (!tId) throw new Error(`No OddsPapi tournament found for ${code}`);
         const metaList: any[] = await this.op.markets();
         const meta = new Map<string, any>();
