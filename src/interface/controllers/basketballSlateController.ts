@@ -252,7 +252,11 @@ export class BasketballSlateController {
             add(`${H.full_name} to win`, pHome);
             add(`${V.full_name} to win`, 1 - pHome);
           }
-          const main = px?.totals?.find((t: any) => t.main) ?? px?.totals?.sort((a: any, b: any) => Math.abs(a.over - a.under) - Math.abs(b.over - b.under))[0];
+          // Main line = the most balanced half-point line (whole numbers can push).
+          const halfLines = (px?.totals ?? []).filter((t: any) => Math.abs(t.line % 1) === 0.5);
+          const main = (halfLines.length ? halfLines : px?.totals ?? [])
+            .slice()
+            .sort((a: any, b: any) => Math.abs(a.over - a.under) - Math.abs(b.over - b.under))[0];
           if (main) {
             const pOver = 1 - Phi((main.line - expTotal) / TOTAL_SD);
             const io = 1 / main.over, iu = 1 / main.under;
