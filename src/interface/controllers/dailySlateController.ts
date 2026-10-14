@@ -428,6 +428,33 @@ export class DailySlateController {
                 if (!o) { entry.oddsNote = "Fixture found but no odds yet"; continue; }
                 const prices = extractPrices(o.bookmakerOdds, meta);
                 entry.oddsFixtureId = best.fixtureId;
+
+                // Calibrate: blend our rule-based estimate with the market's fair
+                // (de-vigged) probability. Pinnacle is preferred as the sharpest book.
+                const ref = (k: string) => prices[k]?.["pinnacle"] ?? prices[k]?.[primary];
+                const fair: Record<string, number> = {};
+                const groups = [["home", "draw", "away"], ["btts_yes", "btts_no"], ["over_1.5", "under_1.5"], ["over_2.5", "under_2.5"], ["over_3.5", "under_3.5"]];
+                for (const g of groups) {
+                  const ps = g.map(ref);
+                  if (ps.every((x) => x && x > 1)) {
+                    const inv = ps.map((x) => 1 / (x as number));
+                    const sum = inv.reduce((a, b) => a + b, 0);
+                    g.forEach((k, i) => (fair[k] = inv[i] / sum));
+                  }
+                }
+                if (fair.home != null && fair.draw != null) fair.home_or_draw = fair.home + fair.draw;
+
+                for (const s of entry.selections) {
+                  const mkt = fair[s.key];
+                  if (mkt != null) {
+                    // Trust our validated favourite rule more than the early-season goal model.
+                    const w = s.key === "home" || s.key === "home_or_draw" ? 0.5 : 0.35;
+                    s.modelProb = r3(s.prob);
+                    s.marketProb = r3(mkt);
+                    s.prob = w * s.prob + (1 - w) * mkt;
+                    s.calibrated = true;
+                  }
+                }
                 for (const s of entry.selections) {
                   const p = prices[s.key];
                   if (!p) continue;
@@ -454,7 +481,7 @@ export class DailySlateController {
           for (const s of m.selections) {
             s.prob = r3(s.prob);
             s.minOdds = Math.ceil((1.05 / s.prob) * 100) / 100; // take only at or above this price
-            if (s.price && s.edge > 0 && !s.suspectPrice) pool.push({ mi, match: `${m.home} v ${m.away}`, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, price: s.price, priceFrom: s.priceFrom, minOdds: s.minOdds, edge: s.edge });
+            if (s.price && s.edge > 0 && !s.suspectPrice) pool.push({ mi, match: `${m.home} v ${m.away}`, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, modelProb: s.modelProb, marketProb: s.marketProb, price: s.price, priceFrom: s.priceFrom, minOdds: s.minOdds, edge: s.edge });
           }
         });
         pool.sort((a, b) => b.edge - a.edge);
@@ -487,6 +514,7 @@ export class DailySlateController {
               valueSelections: pool.slice(0, 10).map(({ mi, ...r }) => r),
               matches: matchesOut,
               notes,
+              calibration: "Where odds exist, prob = blend of our rule estimate (modelProb) and the market's fair probability from Pinnacle (marketProb): 50/50 for home-favourite picks, 35/65 for goal picks.",
               caution: "Probabilities are rule-based estimates. Check injuries, suspensions and lineups before betting. Stake small and fixed.",
             }),
           }],
