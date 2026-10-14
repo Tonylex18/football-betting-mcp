@@ -104,7 +104,7 @@ export class OddsPapiService {
   }
 
   get defaultBookmakers(): string {
-    return process.env.ODDSPAPI_BOOKMAKERS ?? "sportybet,pinnacle";
+    return process.env.ODDSPAPI_BOOKMAKERS ?? "pinnacle";
   }
 
   private async get(path: string, params: Record<string, string | number>, ttlMs: number): Promise<any> {

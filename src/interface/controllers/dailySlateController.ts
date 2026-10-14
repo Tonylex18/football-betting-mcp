@@ -128,17 +128,24 @@ const shrink = (r: number, n: number, base: number, k = 6) =>
 
 /* ---------------- odds parsing ---------------- */
 
-type MarketMeta = { name: string; handicap: number; type: string; outcomes: Record<string, string> };
+type MarketMeta = { name: string; handicap: number; type: string; period: string; outcomes: Record<string, string> };
 
+/**
+ * Classify by OddsPapi's marketType + period (verified against real responses):
+ *   1x2 / fulltime            -> match result
+ *   bothteamsscore / fulltime -> BTTS
+ *   totals / fulltime         -> match goals over/under (NOT teamtotals-team1/2)
+ *   double chance (by name)   -> 1X / X2
+ */
 function classifyMarket(m: MarketMeta): string | null {
-  const n = m.name.toLowerCase();
-  if (/half|1st|2nd|first|second|corner|card|booking|asian|team total|team to|home team|away team|player|minute|interval/.test(n)) return null;
-  if (m.type?.toLowerCase() === "1x2" || n === "full time result" || n.includes("full time result")) return "1x2";
-  if (n.includes("double chance")) return "dc";
-  if (n.includes("both teams to score")) return "btts";
-  if ((n.includes("over under") || m.type?.toLowerCase() === "totals") && (m.handicap === 1.5 || m.handicap === 2.5 || m.handicap === 3.5)) {
-    return "ou" + m.handicap;
-  }
+  const type = (m.type ?? "").toLowerCase();
+  const period = (m.period ?? "").toLowerCase();
+  const name = (m.name ?? "").toLowerCase();
+  if (period && period !== "fulltime") return null;
+  if (type === "1x2") return "1x2";
+  if (type === "bothteamsscore") return "btts";
+  if (type === "totals" && [1.5, 2.5, 3.5].includes(m.handicap)) return "ou" + m.handicap;
+  if (type.includes("doublechance") || name === "double chance" || name === "double chance full time") return "dc";
   return null;
 }
 
@@ -167,7 +174,7 @@ function extractPrices(bookmakerOdds: any, meta: Map<string, MarketMeta>) {
         }
         if (!sel) continue;
         out[sel] = out[sel] ?? {};
-        out[sel][slug] = Math.max(out[sel][slug] ?? 0, price);
+        if (out[sel][slug] == null) out[sel][slug] = price;
       }
     }
   }
@@ -224,7 +231,7 @@ export class DailySlateController {
               const metaOut = (m?.outcomes ?? []).find((x: any) => String(x.outcomeId) === String(oid));
               outs.push({ outcomeId: oid, name: metaOut?.outcomeName ?? null, bookmakerOutcomeId: oc?.players?.["0"]?.bookmakerOutcomeId ?? null, price: oc?.players?.["0"]?.price ?? null });
             }
-            rows.push({ slug, marketId: mid, name, handicap: m?.handicap, type: m?.marketType, period: m?.period, playerProp: m?.playerProp, classifiedAs: m ? classifyMarket({ name, handicap: Number(m.handicap ?? 0), type: String(m.marketType ?? ""), outcomes: {} }) : null, outcomes: outs });
+            rows.push({ slug, marketId: mid, name, handicap: m?.handicap, type: m?.marketType, period: m?.period, playerProp: m?.playerProp, classifiedAs: m ? classifyMarket({ name, handicap: Number(m.handicap ?? 0), type: String(m.marketType ?? ""), period: String(m.period ?? ""), outcomes: {} }) : null, outcomes: outs });
           }
         }
         return {
@@ -379,7 +386,7 @@ export class DailySlateController {
               for (const m of metaList ?? []) {
                 const outcomes: Record<string, string> = {};
                 for (const o of m.outcomes ?? []) outcomes[String(o.outcomeId)] = String(o.outcomeName ?? "");
-                meta.set(String(m.marketId), { name: String(m.marketName ?? ""), handicap: Number(m.handicap ?? 0), type: String(m.marketType ?? ""), outcomes });
+                meta.set(String(m.marketId), { name: String(m.marketName ?? ""), handicap: Number(m.handicap ?? 0), type: String(m.marketType ?? ""), period: String(m.period ?? ""), outcomes });
               }
               const fixtures: any[] = await this.op.fixtures(
                 new Date(start.getTime()).toISOString().slice(0, 19) + "Z",
@@ -446,7 +453,8 @@ export class DailySlateController {
         matchesOut.forEach((m, mi) => {
           for (const s of m.selections) {
             s.prob = r3(s.prob);
-            if (s.price && s.edge > 0 && !s.suspectPrice) pool.push({ mi, match: `${m.home} v ${m.away}`, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, price: s.price, edge: s.edge });
+            s.minOdds = Math.ceil((1.05 / s.prob) * 100) / 100; // take only at or above this price
+            if (s.price && s.edge > 0 && !s.suspectPrice) pool.push({ mi, match: `${m.home} v ${m.away}`, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, price: s.price, priceFrom: s.priceFrom, minOdds: s.minOdds, edge: s.edge });
           }
         });
         pool.sort((a, b) => b.edge - a.edge);
