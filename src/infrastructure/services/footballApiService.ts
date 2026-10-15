@@ -56,7 +56,7 @@ export class FootballApiService {
 
     // Permanent disk cache for finished-season queries (results never change).
     const season = Number(params.season);
-    const diskCacheable = path === "/fixtures" && Number.isFinite(season) && isSeasonFinished(season);
+    const diskCacheable = (path === "/fixtures" || path === "/teams") && Number.isFinite(season) && isSeasonFinished(season);
     const diskFile = nodePath.join(
       DISK_CACHE_DIR,
       createHash("sha1").update(key.replace(/^https?:\/\/[^/]+/, "")).digest("hex") + ".json"
