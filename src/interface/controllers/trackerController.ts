@@ -87,6 +87,32 @@ export class TrackerController {
     this.registerLog();
     this.registerSettle();
     this.registerRecord();
+    this.registerManualResult();
+  }
+
+  private registerManualResult(): void {
+    this.server.tool(
+      "record-result",
+      "Settle open picks for one match from a final score you looked up (use for competitions the automatic settler " +
+        "cannot reach, such as Europa League / Conference League). Score is the 90-minute result, home-away, e.g. '2-1'.",
+      {
+        home: z.string().describe("Home team as logged"),
+        away: z.string().describe("Away team as logged"),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Match date (UTC) YYYY-MM-DD"),
+        score: z.string().regex(/^\d+-\d+$/).describe("Final score home-away, e.g. 2-1"),
+      },
+      async ({ home, away, date, score }) => {
+        const [hg, ag] = score.split("-").map(Number);
+        const all = load();
+        const hits = all.filter((p) => p.status === "open" && p.kickoffUtc.slice(0, 10) === date && sameTeam(home, [p.home]) && sameTeam(away, [p.away]));
+        for (const p of hits) {
+          p.status = settle(p.key, p.line, hg, ag);
+          p.score = score;
+        }
+        save(all);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ settled: hits.map((p) => ({ pick: p.label, result: p.status })) }) }] };
+      }
+    );
   }
 
   private registerLog(): void {
@@ -140,7 +166,7 @@ export class TrackerController {
         const notes: string[] = [];
 
         // football, grouped by competition
-        const comps = [...new Set(due.filter((p) => p.sport === "football").map((p) => p.competition ?? ""))].filter(Boolean);
+        const comps = [...new Set(due.filter((p) => p.sport === "football").map((p) => p.competition ?? ""))].filter((c) => c && !["UEL", "UECL"].includes(c));
         for (const code of comps) {
           let matches: any[] = [];
           try {
@@ -195,6 +221,9 @@ export class TrackerController {
             text: JSON.stringify({
               settled: settled.map((p) => ({ date: p.date, match: `${p.home} v ${p.away}`, pick: p.label, result: p.status, score: p.score, price: p.price })),
               stillOpen: all.filter((p) => p.status === "open").length,
+              needManualResult: all
+                .filter((p) => p.status === "open" && Date.parse(p.kickoffUtc) < Date.now() - 3 * 3600 * 1000 && ["UEL", "UECL"].includes(p.competition ?? ""))
+                .map((p) => ({ home: p.home, away: p.away, date: p.kickoffUtc.slice(0, 10), pick: p.label })),
               notes,
             }),
           }],
