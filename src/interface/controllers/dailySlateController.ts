@@ -296,8 +296,10 @@ export class DailySlateController {
         minSlipOdds: z.number().optional().describe("Minimum combined slip odds (default 2.0)"),
         maxSlipOdds: z.number().optional().describe("Maximum combined slip odds (default 3.2)"),
         withOdds: z.boolean().optional().describe("Fetch bookmaker odds (default true). Set false to save OddsPapi quota."),
+        safeTargetOdds: z.number().optional().describe("Target combined odds for the safe accumulator (default 2.0)"),
+        safeMaxLegs: z.number().min(1).max(10).optional().describe("Maximum legs in the safe accumulator (default 7)"),
       },
-      async ({ days, startDate, competitions, bookmakers, minSlipOdds, maxSlipOdds, withOdds }) => {
+      async ({ days, startDate, competitions, bookmakers, minSlipOdds, maxSlipOdds, withOdds, safeTargetOdds, safeMaxLegs }) => {
         const nDays = days ?? 1;
         const codes = (competitions?.length ? competitions : DEFAULT_COMPS).map((c) => c.toUpperCase()).filter((c) => COMPS[c]);
         const start = startDate ? new Date(`${startDate}T00:00:00`) : new Date();
@@ -514,6 +516,46 @@ export class DailySlateController {
           }
         slips.sort((a, b) => b.expectedValue - a.expectedValue || b.estWinProb - a.estWinProb);
 
+        /* 4. safe accumulator: the highest-probability short-odds legs until the target odds is reached */
+        const target = safeTargetOdds ?? 2.0;
+        const maxLegs = safeMaxLegs ?? 7;
+        const minLegProb = 0.8;
+        const safePool: any[] = [];
+        matchesOut.forEach((m, mi) => {
+          for (const s of m.selections) {
+            if (!s.price || s.suspectPrice) continue;
+            if (Date.parse(m.kickoffUtc) < Date.now() + 10 * 60 * 1000) continue; // already started or about to
+            if (s.prob < minLegProb) continue;
+            if ((s.edge ?? -1) < -0.03) continue; // not much worse than Pinnacle's fair price
+            if (/n=[0-2]\)/.test(String(s.why ?? ""))) continue; // too few games behind the estimate
+            safePool.push({ mi, match: `${m.home} v ${m.away}`, competition: m.competition, league: m.league, home: m.home, away: m.away, key: s.key, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, price: s.price, minOdds: s.minOdds, edge: s.edge });
+          }
+        });
+        safePool.sort((a, b) => b.prob - a.prob || b.edge - a.edge);
+        const safeLegs: any[] = [];
+        const usedMatches = new Set<number>();
+        let safeOdds = 1;
+        for (const leg of safePool) {
+          if (usedMatches.has(leg.mi)) continue;
+          if (safeLegs.length >= maxLegs || safeOdds >= target) break;
+          safeLegs.push(leg);
+          usedMatches.add(leg.mi);
+          safeOdds *= leg.price;
+        }
+        const safeProb = safeLegs.reduce((x, l) => x * l.prob, 1);
+        const safeAccumulator = safeLegs.length
+          ? {
+              legs: safeLegs.map(({ mi, ...r }) => r),
+              combinedOdds: r2(safeOdds),
+              estWinProb: r3(safeProb),
+              expectedValue: r3(safeProb * safeOdds - 1),
+              reachedTarget: safeOdds >= target,
+              note: safeOdds >= target
+                ? "Safest available legs (each 80%+ and close to or better than Pinnacle's fair price), added until the target odds is reached."
+                : `Only ${safeLegs.length} leg(s) met the 80% safety bar today; combined odds fall short of ${target}.`,
+            }
+          : { legs: [], note: "No leg met the 80% safety bar with a usable price today." };
+
         for (const m of matchesOut) delete m._names;
         return {
           content: [{
@@ -521,6 +563,7 @@ export class DailySlateController {
             text: JSON.stringify({
               window: { from: start.toISOString(), to: end.toISOString() },
               primaryBookmaker: primary,
+              safeAccumulator,
               suggestedSlips: slips.slice(0, 3),
               valueSelections: pool.slice(0, 10).map(({ mi, ...r }) => r),
               matches: matchesOut,
