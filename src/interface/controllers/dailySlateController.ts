@@ -296,10 +296,11 @@ export class DailySlateController {
         minSlipOdds: z.number().optional().describe("Minimum combined slip odds (default 2.0)"),
         maxSlipOdds: z.number().optional().describe("Maximum combined slip odds (default 3.2)"),
         withOdds: z.boolean().optional().describe("Fetch bookmaker odds (default true). Set false to save OddsPapi quota."),
-        safeTargetOdds: z.number().optional().describe("Target combined odds for the safe accumulator (default 2.0)"),
-        safeMaxLegs: z.number().min(1).max(10).optional().describe("Maximum legs in the safe accumulator (default 7)"),
+        safeTargetOdds: z.number().optional().describe("Minimum combined odds for the safe accumulator (default 1.5)"),
+        safeMaxLegs: z.number().min(2).max(10).optional().describe("Maximum legs in the safe accumulator (default 5, minimum is always 2)"),
+        safeMaxOdds: z.number().optional().describe("Cap on the safe accumulator's combined odds (default 2.0)"),
       },
-      async ({ days, startDate, competitions, bookmakers, minSlipOdds, maxSlipOdds, withOdds, safeTargetOdds, safeMaxLegs }) => {
+      async ({ days, startDate, competitions, bookmakers, minSlipOdds, maxSlipOdds, withOdds, safeTargetOdds, safeMaxLegs, safeMaxOdds }) => {
         const nDays = days ?? 1;
         const codes = (competitions?.length ? competitions : DEFAULT_COMPS).map((c) => c.toUpperCase()).filter((c) => COMPS[c]);
         const start = startDate ? new Date(`${startDate}T00:00:00`) : new Date();
@@ -516,10 +517,13 @@ export class DailySlateController {
           }
         slips.sort((a, b) => b.expectedValue - a.expectedValue || b.estWinProb - a.estWinProb);
 
-        /* 4. safe accumulator: the highest-probability short-odds legs until the target odds is reached */
-        const target = safeTargetOdds ?? 2.0;
-        const maxLegs = safeMaxLegs ?? 7;
-        const minLegProb = 0.8;
+        /* 4. safe accumulator: the combination of 2+ legs (different matches) whose combined odds lands
+              between the target and the cap with the highest chance of winning. One slip per day, no backup. */
+        const target = safeTargetOdds ?? 1.5;
+        const cap = safeMaxOdds ?? 2.0;
+        const maxLegs = safeMaxLegs ?? 5;
+        const minLegs = 2;
+        const minLegProb = 0.7;
         const safePool: any[] = [];
         matchesOut.forEach((m, mi) => {
           for (const s of m.selections) {
@@ -532,29 +536,41 @@ export class DailySlateController {
           }
         });
         safePool.sort((a, b) => b.prob - a.prob || b.edge - a.edge);
-        const safeLegs: any[] = [];
-        const usedMatches = new Set<number>();
-        let safeOdds = 1;
-        for (const leg of safePool) {
-          if (usedMatches.has(leg.mi)) continue;
-          if (safeLegs.length >= maxLegs || safeOdds >= target) break;
-          safeLegs.push(leg);
-          usedMatches.add(leg.mi);
-          safeOdds *= leg.price;
-        }
-        const safeProb = safeLegs.reduce((x, l) => x * l.prob, 1);
-        const safeAccumulator = safeLegs.length
+        const safeSearchPool = safePool.slice(0, 18); // bound the search
+        let best: { legs: any[]; odds: number; prob: number } | null = null;
+        const search = (start: number, legs: any[], odds: number, prob: number, used: Set<number>) => {
+          if (best && prob <= best.prob) return; // adding legs only lowers the chance
+          if (legs.length >= minLegs && odds >= target && odds <= cap) {
+            best = { legs: [...legs], odds, prob };
+            return;
+          }
+          if (legs.length >= maxLegs || odds > cap) return;
+          for (let i = start; i < safeSearchPool.length; i++) {
+            const leg = safeSearchPool[i];
+            if (used.has(leg.mi)) continue;
+            used.add(leg.mi);
+            legs.push(leg);
+            search(i + 1, legs, odds * leg.price, prob * leg.prob, used);
+            legs.pop();
+            used.delete(leg.mi);
+          }
+        };
+        search(0, [], 1, 1, new Set());
+        const chosen = best as { legs: any[]; odds: number; prob: number } | null;
+        const safeAccumulator = chosen
           ? {
-              legs: safeLegs.map(({ mi, ...r }) => r),
-              combinedOdds: r2(safeOdds),
-              estWinProb: r3(safeProb),
-              expectedValue: r3(safeProb * safeOdds - 1),
-              reachedTarget: safeOdds >= target,
-              note: safeOdds >= target
-                ? "Safest available legs (each 80%+ and close to or better than Pinnacle's fair price), added until the target odds is reached."
-                : `Only ${safeLegs.length} leg(s) met the 80% safety bar today; combined odds fall short of ${target}.`,
+              bookable: true,
+              legs: chosen.legs.map(({ mi, ...r }: any) => r),
+              combinedOdds: r2(chosen.odds),
+              estWinProb: r3(chosen.prob),
+              expectedValue: r3(chosen.prob * chosen.odds - 1),
+              note: `Highest-probability combination of ${minLegs}+ legs (each ${Math.round(minLegProb * 100)}%+, priced close to or better than Pinnacle) with combined odds between ${target} and ${cap}. This is the only slip for the day.`,
             }
-          : { legs: [], note: "No leg met the 80% safety bar with a usable price today." };
+          : {
+              bookable: false,
+              legs: [],
+              note: `No combination of ${minLegs}+ safe legs reaches ${target}-${cap} today. No bet today.`,
+            };
 
         for (const m of matchesOut) delete m._names;
         return {
