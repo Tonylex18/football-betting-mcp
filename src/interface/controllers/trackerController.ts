@@ -31,6 +31,7 @@ type Pick = {
   price?: number;
   minOdds?: number;
   slip?: boolean;
+  slipName?: string; // streak | big
   status: "open" | "won" | "lost" | "void";
   score?: string;
   needsGoalOrder?: boolean;
@@ -81,6 +82,15 @@ function settle1up(side: "home" | "away", hg: number, ag: number, ht?: { home: n
 function settle(key: string, line: number | undefined, hg: number, ag: number, ht?: { home: number; away: number } | null, everLed?: boolean): Outcome {
   if (key === "home_1up") return settle1up("home", hg, ag, ht, everLed);
   if (key === "away_1up") return settle1up("away", hg, ag, ht, everLed);
+  if (key === "home_or_draw_1up" || key === "away_or_draw_1up") {
+    const side = key.startsWith("home") ? "home" : "away";
+    const [f, o] = side === "home" ? [hg, ag] : [ag, hg];
+    if (f >= o) return "won"; // win or draw
+    return settle1up(side, hg, ag, ht, everLed); // lost on the final score: only an early lead saves it
+  }
+  if (key === "home_or_away") return hg !== ag ? "won" : "lost";
+  if (key === "home_over_0.5") return hg > 0 ? "won" : "lost";
+  if (key === "away_over_0.5") return ag > 0 ? "won" : "lost";
   const tot = hg + ag;
   const ou = (side: "over" | "under", l: number) => {
     if (tot === l) return "void" as const;
@@ -143,7 +153,7 @@ export class TrackerController {
       "log-picks",
       "Save the picks that were recommended today so they can be settled later. Use the fields from get-daily-slate " +
         "valueSelections (competition, home, away, key, kickoffUtc, label, prob, price, minOdds) or get-basketball-slate " +
-        "valuePicks (home, away, key, line, tipoffUtc as kickoffUtc). Mark slip legs with slip=true. Duplicates are ignored.",
+        "valuePicks (home, away, key, line, tipoffUtc as kickoffUtc). Mark slip legs with slip=true and slipName (streak or big). Duplicates are ignored.",
       {
         date: z.string().describe("Lagos date the picks were sent, YYYY-MM-DD"),
         picks: z.array(z.object({
@@ -159,6 +169,7 @@ export class TrackerController {
           price: z.number().optional(),
           minOdds: z.number().optional(),
           slip: z.boolean().optional(),
+          slipName: z.enum(["streak", "big"]).optional().describe("Which daily slip this leg belongs to"),
         })).min(1),
       },
       async ({ date, picks }) => {
@@ -189,7 +200,7 @@ export class TrackerController {
         const notes: string[] = [];
 
         // football, grouped by competition
-        const comps = [...new Set(due.filter((p) => p.sport === "football").map((p) => p.competition ?? ""))].filter((c) => c && !["UEL", "UECL"].includes(c));
+        const comps = [...new Set(due.filter((p) => p.sport === "football").map((p) => p.competition ?? ""))].filter((c) => c && !["UEL", "UECL"].includes(c) && !c.startsWith("OP:"));
         for (const code of comps) {
           let matches: any[] = [];
           try {
@@ -248,10 +259,12 @@ export class TrackerController {
               settled: settled.map((p) => ({ date: p.date, match: `${p.home} v ${p.away}`, pick: p.label, result: p.status, score: p.score, price: p.price })),
               stillOpen: all.filter((p) => p.status === "open").length,
               needManualResult: all
-                .filter((p) => p.status === "open" && Date.parse(p.kickoffUtc) < Date.now() - 3 * 3600 * 1000 && (["UEL", "UECL"].includes(p.competition ?? "") || p.needsGoalOrder))
+                .filter((p) => p.status === "open" && Date.parse(p.kickoffUtc) < Date.now() - 3 * 3600 * 1000 && (["UEL", "UECL"].includes(p.competition ?? "") || (p.competition ?? "").startsWith("OP:") || p.needsGoalOrder))
                 .map((p) => ({
                   home: p.home, away: p.away, date: p.kickoffUtc.slice(0, 10), pick: p.label,
-                  ...(p.needsGoalOrder ? { score: p.score, ask: "1UP pick: look up the goal order and pass everLed to record-result" } : {}),
+                  key: p.key,
+                  league: (p.competition ?? "").replace(/^OP:/, ""),
+                  ...(p.needsGoalOrder || p.key.includes("1up") ? { ask: "1UP pick: find the final score and whether the picked team ever led by a goal; pass everLed to record-result" } : {}),
                 })),
               notes,
             }),
@@ -284,14 +297,26 @@ export class TrackerController {
             profitAtMinSportyBet: r2(withMin.reduce((a, p) => a + (p.status === "won" ? (p.minOdds as number) - 1 : -1), 0)),
           };
         };
-        // slips: picks flagged slip=true, grouped by date
-        const byDate = new Map<string, Pick[]>();
-        for (const p of all.filter((x) => x.slip)) byDate.set(p.date, [...(byDate.get(p.date) ?? []), p]);
-        const slips = [...byDate.entries()].map(([date, legs]) => ({
-          date,
-          legs: legs.map((l) => `${l.label} (${l.home} v ${l.away}): ${l.status}`),
-          result: legs.some((l) => l.status === "lost") ? "lost" : legs.every((l) => l.status === "won" || l.status === "void") ? "won" : "open",
-        }));
+        // slips: picks flagged slip=true, grouped by date and slip name
+        const bySlip = new Map<string, Pick[]>();
+        for (const p of all.filter((x) => x.slip)) {
+          const k = `${p.date}|${p.slipName ?? "streak"}`;
+          bySlip.set(k, [...(bySlip.get(k) ?? []), p]);
+        }
+        const slips = [...bySlip.entries()].sort().map(([k, legs]) => {
+          const [date, name] = k.split("|");
+          const result = legs.some((l) => l.status === "lost") ? "lost" : legs.every((l) => l.status === "won" || l.status === "void") ? "won" : "open";
+          const odds = legs.every((l) => l.price) ? r2(legs.reduce((a, l) => a * (l.status === "void" ? 1 : (l.price as number)), 1)) : null;
+          return { date, slip: name, result, odds, legs: legs.map((l) => `${l.label} (${l.home} v ${l.away}): ${l.status}`) };
+        });
+        const streakDays = slips.filter((s) => s.slip === "streak" && s.result !== "open");
+        let streak = 0;
+        for (let i = streakDays.length - 1; i >= 0 && streakDays[i].result === "won"; i--) streak++;
+        const slipSummary = (name: string) => {
+          const d = slips.filter((s) => s.slip === name && s.result !== "open");
+          const won = d.filter((s) => s.result === "won");
+          return { settled: d.length, won: won.length, profitUnits: r2(d.reduce((a, s) => a + (s.result === "won" ? (s.odds ?? 1) - 1 : -1), 0)) };
+        };
         return {
           content: [{
             type: "text" as const,
@@ -300,7 +325,10 @@ export class TrackerController {
               football: sum(done.filter((p) => p.sport === "football")),
               basketball: sum(done.filter((p) => p.sport === "basketball")),
               open: all.filter((p) => p.status === "open").length,
-              slips: slips.slice(-14),
+              currentStreak: streak,
+              streakSlips: slipSummary("streak"),
+              bigSlips: slipSummary("big"),
+              slips: slips.slice(-20),
               note: "Profit is per 1-unit stake on each pick. A hit rate close to expectedHitRate means our probabilities are honest; profit only matters over 100+ picks.",
             }),
           }],

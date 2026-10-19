@@ -36,8 +36,8 @@ const COMPS: Record<string, Comp> = {
 };
 const DEFAULT_COMPS = ["PPL", "DED", "BL1", "PL"];
 
-const r3 = (x: number) => Math.round(x * 1000) / 1000;
-const r2 = (x: number) => Math.round(x * 100) / 100;
+export const r3 = (x: number) => Math.round(x * 1000) / 1000;
+export const r2 = (x: number) => Math.round(x * 100) / 100;
 
 /* ---------------- name matching ---------------- */
 
@@ -128,7 +128,7 @@ const shrink = (r: number, n: number, base: number, k = 6) =>
 
 /* ---------------- odds parsing ---------------- */
 
-type MarketMeta = { name: string; handicap: number; type: string; period: string; outcomes: Record<string, string> };
+export type MarketMeta = { name: string; handicap: number; type: string; period: string; outcomes: Record<string, string> };
 
 /**
  * Classify by OddsPapi's marketType + period (verified against real responses):
@@ -137,7 +137,7 @@ type MarketMeta = { name: string; handicap: number; type: string; period: string
  *   totals / fulltime         -> match goals over/under (NOT teamtotals-team1/2)
  *   double chance (by name)   -> 1X / X2
  */
-function classifyMarket(m: MarketMeta): string | null {
+export function classifyMarket(m: MarketMeta): string | null {
   const type = (m.type ?? "").toLowerCase();
   const period = (m.period ?? "").toLowerCase();
   const name = (m.name ?? "").toLowerCase();
@@ -150,7 +150,7 @@ function classifyMarket(m: MarketMeta): string | null {
 }
 
 /** Map a fixture's bookmakerOdds into {selectionKey: {slug: price}} */
-function extractPrices(bookmakerOdds: any, meta: Map<string, MarketMeta>) {
+export function extractPrices(bookmakerOdds: any, meta: Map<string, MarketMeta>) {
   const out: Record<string, Record<string, number>> = {};
   for (const [slug, bo] of Object.entries<any>(bookmakerOdds ?? {})) {
     if (bo?.bookmakerIsActive === false || bo?.suspended) continue;
@@ -187,14 +187,14 @@ function extractPrices(bookmakerOdds: any, meta: Map<string, MarketMeta>) {
 /* SportyBet 1UP: a 1X2 pick paid as soon as the team leads by a goal  */
 /* ------------------------------------------------------------------ */
 
-function poissonPmf(k: number, l: number) {
+export function poissonPmf(k: number, l: number) {
   let p = Math.exp(-l);
   for (let i = 1; i <= k; i++) p *= l / i;
   return p;
 }
 
 /** Home win / draw / away win for independent Poisson goals. */
-function poisson1x2(lh: number, la: number) {
+export function poisson1x2(lh: number, la: number) {
   let h = 0, d = 0, a = 0;
   for (let i = 0; i <= 12; i++)
     for (let j = 0; j <= 12; j++) {
@@ -205,7 +205,7 @@ function poisson1x2(lh: number, la: number) {
 }
 
 /** Total goals T such that P(total > line) = target. */
-function totalFromOver(line: number, target: number) {
+export function totalFromOver(line: number, target: number) {
   let lo = 0.3, hi = 6;
   for (let it = 0; it < 40; it++) {
     const mid = (lo + hi) / 2;
@@ -217,7 +217,7 @@ function totalFromOver(line: number, target: number) {
 }
 
 /** Split total T into home/away rates so that P(home) - P(away) matches the market. */
-function fitRates(total: number, fairHome: number, fairAway: number) {
+export function fitRates(total: number, fairHome: number, fairAway: number) {
   let lo = 0.02, hi = 0.98;
   for (let it = 0; it < 40; it++) {
     const s = (lo + hi) / 2;
@@ -229,7 +229,7 @@ function fitRates(total: number, fairHome: number, fairAway: number) {
 }
 
 /** Chance a team with rate lf (vs lo) is ahead by a goal at some point in the match. */
-function everLeadsProb(lf: number, lo: number) {
+export function everLeadsProb(lf: number, lo: number) {
   const T = lf + lo;
   const q = lf / T;
   // dist over goal difference for paths that have not yet led; diff <= 0
@@ -248,6 +248,24 @@ function everLeadsProb(lf: number, lo: number) {
     total += poissonPmf(n, T) * hitBy;
   }
   // tail: more than 15 goals is negligible
+  return total;
+}
+
+/** P(team never leads at any point AND the match ends level). */
+export function drawWithoutLeadingProb(lf: number, lo: number) {
+  const T = lf + lo;
+  const q = lf / T;
+  let dist = new Map<number, number>([[0, 1]]);
+  let total = poissonPmf(0, T); // 0-0
+  for (let n = 1; n <= 15; n++) {
+    const next = new Map<number, number>();
+    dist.forEach((p, d) => {
+      if (d + 1 < 1) next.set(d + 1, (next.get(d + 1) ?? 0) + p * q);
+      next.set(d - 1, (next.get(d - 1) ?? 0) + p * (1 - q));
+    });
+    dist = next;
+    total += poissonPmf(n, T) * (dist.get(0) ?? 0);
+  }
   return total;
 }
 

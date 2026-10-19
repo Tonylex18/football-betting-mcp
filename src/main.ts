@@ -7,6 +7,7 @@ import { LeagueScanController } from "./interface/controllers/leagueScanControll
 import { DailySlateController } from "./interface/controllers/dailySlateController.js";
 import { BasketballSlateController } from "./interface/controllers/basketballSlateController.js";
 import { TrackerController } from "./interface/controllers/trackerController.js";
+import { SportyBetSlipsController } from "./interface/controllers/sportyBetSlipsController.js";
 import { EuroCupsController } from "./interface/controllers/euroCupsController.js";
 import { FootballDataService, OddsPapiService, BallDontLieService } from "./infrastructure/services/liveSources.js";
 import { FootballApiService } from "./infrastructure/services/footballApiService.js";
@@ -36,6 +37,7 @@ async function main() {
   new BasketballSlateController(server, ballDontLie, oddsPapi);
   new TrackerController(server, footballData, ballDontLie);
   new EuroCupsController(server, api, footballData, oddsPapi);
+  new SportyBetSlipsController(server, oddsPapi);
 
   // transport stdio
   const transport = new StdioServerTransport();
