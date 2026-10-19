@@ -183,6 +183,74 @@ function extractPrices(bookmakerOdds: any, meta: Map<string, MarketMeta>) {
 
 /* ---------------- controller ---------------- */
 
+/* ------------------------------------------------------------------ */
+/* SportyBet 1UP: a 1X2 pick paid as soon as the team leads by a goal  */
+/* ------------------------------------------------------------------ */
+
+function poissonPmf(k: number, l: number) {
+  let p = Math.exp(-l);
+  for (let i = 1; i <= k; i++) p *= l / i;
+  return p;
+}
+
+/** Home win / draw / away win for independent Poisson goals. */
+function poisson1x2(lh: number, la: number) {
+  let h = 0, d = 0, a = 0;
+  for (let i = 0; i <= 12; i++)
+    for (let j = 0; j <= 12; j++) {
+      const p = poissonPmf(i, lh) * poissonPmf(j, la);
+      if (i > j) h += p; else if (i === j) d += p; else a += p;
+    }
+  return { h, d, a };
+}
+
+/** Total goals T such that P(total > line) = target. */
+function totalFromOver(line: number, target: number) {
+  let lo = 0.3, hi = 6;
+  for (let it = 0; it < 40; it++) {
+    const mid = (lo + hi) / 2;
+    let under = 0;
+    for (let k = 0; k <= Math.floor(line); k++) under += poissonPmf(k, mid);
+    if (1 - under < target) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/** Split total T into home/away rates so that P(home) - P(away) matches the market. */
+function fitRates(total: number, fairHome: number, fairAway: number) {
+  let lo = 0.02, hi = 0.98;
+  for (let it = 0; it < 40; it++) {
+    const s = (lo + hi) / 2;
+    const r = poisson1x2(total * s, total * (1 - s));
+    if (r.h - r.a < fairHome - fairAway) lo = s; else hi = s;
+  }
+  const s = (lo + hi) / 2;
+  return { lh: total * s, la: total * (1 - s) };
+}
+
+/** Chance a team with rate lf (vs lo) is ahead by a goal at some point in the match. */
+function everLeadsProb(lf: number, lo: number) {
+  const T = lf + lo;
+  const q = lf / T;
+  // dist over goal difference for paths that have not yet led; diff <= 0
+  let dist = new Map<number, number>([[0, 1]]);
+  let hitBy = 0; // P(led within n goals)
+  let total = 0;
+  for (let n = 1; n <= 15; n++) {
+    const next = new Map<number, number>();
+    let hitNow = 0;
+    dist.forEach((p, d) => {
+      if (d + 1 >= 1) hitNow += p * q; else next.set(d + 1, (next.get(d + 1) ?? 0) + p * q);
+      next.set(d - 1, (next.get(d - 1) ?? 0) + p * (1 - q));
+    });
+    hitBy += hitNow;
+    dist = next;
+    total += poissonPmf(n, T) * hitBy;
+  }
+  // tail: more than 15 goals is negligible
+  return total;
+}
+
 export class DailySlateController {
   constructor(private server: McpServer, private fd: FootballDataService, private op: OddsPapiService) {
     this.registerSlate();
@@ -480,6 +548,37 @@ export class DailySlateController {
                   // No real pre-match edge is this big: treat as a mis-mapped market.
                   if (s.edge > 0.4) s.suspectPrice = true;
                 }
+
+                // SportyBet 1UP legs for clear favourites (priced by SportyBet only, so the price is an estimate).
+                if (fair.home != null && fair.away != null && Math.max(fair.home, fair.away) >= 0.5) {
+                  const line = fair["over_2.5"] != null ? 2.5 : fair["over_1.5"] != null ? 1.5 : null;
+                  const T = line ? totalFromOver(line, fair[`over_${line}`]) : 2.7;
+                  const { lh, la } = fitRates(T, fair.home, fair.away);
+                  for (const side of ["home", "away"] as const) {
+                    const fairWin = fair[side];
+                    if (fairWin < 0.5) continue;
+                    const lead = everLeadsProb(side === "home" ? lh : la, side === "home" ? la : lh);
+                    const ruleWin = entry.selections.find((x: any) => x.key === side);
+                    const adj = ruleWin ? ruleWin.prob - fairWin : 0; // carry our rule's view of the win over
+                    const p1 = Math.min(0.97, lead + adj - 0.02); // small safety margin
+                    const team = side === "home" ? entry.home : entry.away;
+                    const est = r2(1 / (p1 * 1.05)); // rough SportyBet 1UP price; confirm in the app
+                    entry.selections.push({
+                      key: `${side}_1up`,
+                      label: `${team} to win (1UP)`,
+                      prob: p1,
+                      modelProb: r3(lead),
+                      marketProb: r3(fairWin),
+                      calibrated: true,
+                      price: est,
+                      estimatedPrice: true,
+                      priceFrom: "estimate of SportyBet 1UP price",
+                      impliedProb: r3(1 / est),
+                      edge: 0,
+                      why: `Paid as soon as ${team} lead by a goal. Pinnacle-implied win ${Math.round(fairWin * 100)}%, chance of leading at some point ${Math.round(lead * 100)}%.`,
+                    } as any);
+                  }
+                }
               }
             }
           } catch (e: any) {
@@ -494,7 +593,8 @@ export class DailySlateController {
         matchesOut.forEach((m, mi) => {
           for (const s of m.selections) {
             s.prob = r3(s.prob);
-            s.minOdds = Math.ceil((1.05 / s.prob) * 100) / 100; // take only at or above this price
+            // take only at or above this price; 1UP legs are for safety, so break-even is enough
+            s.minOdds = Math.ceil(((s.key.endsWith("_1up") ? 1.0 : 1.05) / s.prob) * 100) / 100;
             if (s.price && s.edge > 0 && !s.suspectPrice) pool.push({ mi, match: `${m.home} v ${m.away}`, competition: m.competition, home: m.home, away: m.away, key: s.key, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, modelProb: s.modelProb, marketProb: s.marketProb, price: s.price, priceFrom: s.priceFrom, minOdds: s.minOdds, edge: s.edge });
           }
         });
@@ -532,7 +632,7 @@ export class DailySlateController {
             if (s.prob < minLegProb) continue;
             if ((s.edge ?? -1) < -0.03) continue; // not much worse than Pinnacle's fair price
             if (/n=[0-2]\)/.test(String(s.why ?? ""))) continue; // too few games behind the estimate
-            safePool.push({ mi, match: `${m.home} v ${m.away}`, competition: m.competition, league: m.league, home: m.home, away: m.away, key: s.key, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, price: s.price, minOdds: s.minOdds, edge: s.edge });
+            safePool.push({ estimatedPrice: (s as any).estimatedPrice, mi, match: `${m.home} v ${m.away}`, competition: m.competition, league: m.league, home: m.home, away: m.away, key: s.key, kickoffUtc: m.kickoffUtc, label: s.label, prob: s.prob, price: s.price, minOdds: s.minOdds, edge: s.edge });
           }
         });
         safePool.sort((a, b) => b.prob - a.prob || b.edge - a.edge);

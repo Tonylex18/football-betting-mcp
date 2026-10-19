@@ -24,7 +24,7 @@ type Pick = {
   home: string;
   away: string;
   kickoffUtc: string;
-  key: string; // home | away | home_or_draw | over_2.5 | under_2.5 | btts_yes | btts_no | over | under
+  key: string; // home | away | home_1up | away_1up | home_or_draw | over_2.5 | under_2.5 | btts_yes | btts_no | over | under
   line?: number;
   label: string;
   prob: number;
@@ -33,6 +33,7 @@ type Pick = {
   slip?: boolean;
   status: "open" | "won" | "lost" | "void";
   score?: string;
+  needsGoalOrder?: boolean;
 };
 
 function load(): Pick[] {
@@ -58,7 +59,28 @@ function sameTeam(a: string, names: (string | undefined)[]) {
   });
 }
 
-function settle(key: string, line: number | undefined, hg: number, ag: number): "won" | "lost" | "void" {
+type Outcome = "won" | "lost" | "void" | "open";
+
+/**
+ * SportyBet 1UP: the pick is paid as soon as the team goes one goal ahead.
+ * From the final (and half-time) score we can tell most cases; the rest need the goal order.
+ */
+function settle1up(side: "home" | "away", hg: number, ag: number, ht?: { home: number; away: number } | null, everLed?: boolean): Outcome {
+  const [f, o] = side === "home" ? [hg, ag] : [ag, hg];
+  if (everLed !== undefined) return everLed ? "won" : "lost";
+  if (f > o) return "won";
+  if (f === 0) return "lost";
+  if (ht) {
+    const [hf, ho] = side === "home" ? [ht.home, ht.away] : [ht.away, ht.home];
+    if (hf > ho) return "won";
+  }
+  if (o === 0) return "won"; // scored and never conceded: was ahead
+  return "open"; // need the goal order
+}
+
+function settle(key: string, line: number | undefined, hg: number, ag: number, ht?: { home: number; away: number } | null, everLed?: boolean): Outcome {
+  if (key === "home_1up") return settle1up("home", hg, ag, ht, everLed);
+  if (key === "away_1up") return settle1up("away", hg, ag, ht, everLed);
   const tot = hg + ag;
   const ou = (side: "over" | "under", l: number) => {
     if (tot === l) return "void" as const;
@@ -100,13 +122,14 @@ export class TrackerController {
         away: z.string().describe("Away team as logged"),
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Match date (UTC) YYYY-MM-DD"),
         score: z.string().regex(/^\d+-\d+$/).describe("Final score home-away, e.g. 2-1"),
+        everLed: z.boolean().optional().describe("For 1UP picks only: did the picked team ever lead by a goal during the match?"),
       },
-      async ({ home, away, date, score }) => {
+      async ({ home, away, date, score, everLed }) => {
         const [hg, ag] = score.split("-").map(Number);
         const all = load();
         const hits = all.filter((p) => p.status === "open" && p.kickoffUtc.slice(0, 10) === date && sameTeam(home, [p.home]) && sameTeam(away, [p.away]));
         for (const p of hits) {
-          p.status = settle(p.key, p.line, hg, ag);
+          p.status = settle(p.key, p.line, hg, ag, null, everLed);
           p.score = score;
         }
         save(all);
@@ -184,8 +207,11 @@ export class TrackerController {
             if (["POSTPONED", "CANCELLED", "SUSPENDED"].includes(m.status)) { p.status = "void"; p.score = m.status; settled.push(p); continue; }
             if (m.status !== "FINISHED" || m.score?.fullTime?.home == null) continue;
             const hg = m.score.fullTime.home, ag = m.score.fullTime.away;
-            p.status = settle(p.key, p.line, hg, ag);
+            const ht = m.score?.halfTime?.home != null ? { home: m.score.halfTime.home, away: m.score.halfTime.away } : null;
             p.score = `${hg}-${ag}`;
+            const res = settle(p.key, p.line, hg, ag, ht);
+            if (res === "open") { p.needsGoalOrder = true; continue; }
+            p.status = res;
             settled.push(p);
           }
         }
@@ -222,8 +248,11 @@ export class TrackerController {
               settled: settled.map((p) => ({ date: p.date, match: `${p.home} v ${p.away}`, pick: p.label, result: p.status, score: p.score, price: p.price })),
               stillOpen: all.filter((p) => p.status === "open").length,
               needManualResult: all
-                .filter((p) => p.status === "open" && Date.parse(p.kickoffUtc) < Date.now() - 3 * 3600 * 1000 && ["UEL", "UECL"].includes(p.competition ?? ""))
-                .map((p) => ({ home: p.home, away: p.away, date: p.kickoffUtc.slice(0, 10), pick: p.label })),
+                .filter((p) => p.status === "open" && Date.parse(p.kickoffUtc) < Date.now() - 3 * 3600 * 1000 && (["UEL", "UECL"].includes(p.competition ?? "") || p.needsGoalOrder))
+                .map((p) => ({
+                  home: p.home, away: p.away, date: p.kickoffUtc.slice(0, 10), pick: p.label,
+                  ...(p.needsGoalOrder ? { score: p.score, ask: "1UP pick: look up the goal order and pass everLed to record-result" } : {}),
+                })),
               notes,
             }),
           }],
