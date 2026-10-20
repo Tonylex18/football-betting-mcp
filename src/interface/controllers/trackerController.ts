@@ -120,6 +120,26 @@ export class TrackerController {
     this.registerSettle();
     this.registerRecord();
     this.registerManualResult();
+    this.registerRemove();
+  }
+
+  private registerRemove(): void {
+    this.server.tool(
+      "remove-picks",
+      "Remove open logged picks that were not actually booked (for example a leg swapped out before betting). " +
+        "Matches by date the pick was logged, home team and optional key.",
+      {
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Lagos date the pick was logged"),
+        home: z.string().describe("Home team as logged"),
+        key: z.string().optional().describe("Pick key, e.g. home_or_draw_1up (optional)"),
+      },
+      async ({ date, home, key }) => {
+        const all = load();
+        const keep = all.filter((p) => !(p.status === "open" && p.date === date && sameTeam(home, [p.home]) && (!key || p.key === key)));
+        save(keep);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ removed: all.length - keep.length }) }] };
+      }
+    );
   }
 
   private registerManualResult(): void {

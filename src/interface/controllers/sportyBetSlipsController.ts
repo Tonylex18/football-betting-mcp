@@ -246,7 +246,7 @@ export class SportyBetSlipsController {
               const dcFair = side === "home" ? fh + fd : fa + fd;
               // SportyBet's 1UP prices sit a little under its normal prices (about 7% under Pinnacle).
               add(`${side}_1up`, `${team} to win (1UP)`, "1X2 - 1UP", side === "home" ? "Home" : "Away", lead, winPrice * 0.93);
-              add(`${side}_or_draw_1up`, `${team} or draw (1UP)`, "DC - 1UP", side === "home" ? "Home or Draw" : "Draw or Away", lead + drawNoLead, (1 / dcFair) * 0.93);
+              add(`${side}_or_draw_1up`, `${team} or draw (1UP)`, "DC - 1UP", side === "home" ? "Home or Draw" : "Draw or Away", lead + drawNoLead, (1 / dcFair) * 0.91); // calibrated: SportyBet 1.11 / 1.16 vs our 1.13 / 1.19 on 20 Oct
               add(`${side}_or_draw`, `${team} or draw`, "Double Chance", side === "home" ? "Home or Draw" : "Draw or Away", dcFair - 0.01, (1 / dcFair) * 0.94);
               const tt = pr[`${side}_over_0.5`] && pr[`${side}_under_0.5`] ? devig([pr[`${side}_over_0.5`], pr[`${side}_under_0.5`]])[0] : 1 - poissonPmf(0, lf);
               add(`${side}_over_0.5`, `${team} to score (Over 0.5)`, `${team} Over/Under`, "Over 0.5", tt - 0.01, (1 / tt) * 0.94);
