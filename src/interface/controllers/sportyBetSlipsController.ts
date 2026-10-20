@@ -23,6 +23,7 @@ import {
 
 // Leagues SportyBet carries widely, in priority order. Matched against OddsPapi category + tournament names.
 const LEAGUES: { country: string; names: RegExp }[] = [
+  { country: "", names: /^uefa (champions|europa|conference) league$/ }, // midweek nights
   { country: "england", names: /^(premier league|championship|league one)$/ },
   { country: "spain", names: /^(laliga|la liga|laliga 2|laliga hypermotion|segunda division)$/ },
   { country: "italy", names: /^(serie a|serie b)$/ },
