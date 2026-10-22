@@ -272,7 +272,7 @@ export class SportyBetSlipsController {
         // 4a. streak slip: exhaustive search, highest chance with odds in range, 2-4 legs, one per match.
         const sMin = streakMin ?? 1.8;
         const sMax = streakMax ?? 2.25;
-        const sPool = [...pool].sort((a, b) => b.prob - a.prob).slice(0, 40);
+        const sPool = [...pool].filter((l) => l.price >= 1.1).sort((a, b) => b.prob - a.prob).slice(0, 50); // tiny prices cannot reach the target in 4 legs
         let best: { legs: Leg[]; odds: number; prob: number } | null = null;
         const search = (start: number, legs: Leg[], odds: number, prob: number) => {
           if (best && prob <= best.prob) return;
